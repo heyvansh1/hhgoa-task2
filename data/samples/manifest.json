@@ -1,0 +1,14 @@
+[
+    {
+        "sample_id": "sample_en_1",
+        "file_path": "data/samples/en_1.wav",
+        "language": "en",
+        "reference": "What is the capital of India?"
+    },
+    {
+        "sample_id": "sample_hi_1",
+        "file_path": "data/samples/hi_1.wav",
+        "language": "hi",
+        "reference": "भारत की राजधानी क्या है?"
+    }
+]

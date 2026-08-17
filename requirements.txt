@@ -1,0 +1,4 @@
+requests
+datasets
+pytest
+python-dotenv

@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Optional, Dict, Any
 
 @dataclass
 class Chunk:
@@ -8,3 +8,6 @@ class Chunk:
     language: str
     text: str
     query_cluster: Optional[str] = None
+    parent_chunk_id: Optional[str] = None
+    parent_text: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)

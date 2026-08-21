@@ -1,131 +1,221 @@
+"""Semantic chunking strategy.
+
+Uses a lightweight multilingual sentence embedder to compute cosine distances
+between adjacent sentences.  Chunk boundaries are inserted at distance
+*spikes* — i.e. where the semantic topic shifts — giving retrieval units that
+are topically coherent.
+
+Model: ``paraphrase-multilingual-MiniLM-L12-v2`` (~134 M params, supports
+100+ languages including English and Hindi).
+"""
+
+from __future__ import annotations
+
+import logging
 import re
-import numpy as np
 from typing import List, Optional
+
+import numpy as np
+
 from data.preprocess import Passage
+from chunking.interface import BaseChunker
 from chunking.types import Chunk
-from chunking.interface import Chunker
 
-class SemanticChunker(Chunker):
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Lazy model singleton — avoid re-loading the ~420 MB model every time
+# ---------------------------------------------------------------------------
+_EMBEDDER: Optional[object] = None
+_DEFAULT_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+
+
+def _get_embedder(model_name: str = _DEFAULT_MODEL):
+    """Return a cached ``SentenceTransformer`` instance."""
+    global _EMBEDDER
+    if _EMBEDDER is None:
+        from sentence_transformers import SentenceTransformer
+
+        logger.info("Loading sentence-transformer model: %s", model_name)
+        _EMBEDDER = SentenceTransformer(model_name)
+    return _EMBEDDER
+
+
+# ---------------------------------------------------------------------------
+# Sentence splitting (language-aware)
+# ---------------------------------------------------------------------------
+
+# Hindi sentence-ending punctuation: purna viram (।), double danda (॥),
+# plus standard ASCII period / question / exclamation.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[।॥.!?])\s+")
+
+
+def _split_sentences(text: str) -> List[str]:
+    """Split *text* into sentences using punctuation heuristics.
+
+    Handles both English (period / ? / !) and Hindi (purna viram / danda)
+    sentence terminators.
+
+    Returns:
+        A list of non-empty sentence strings.
     """
-    Semantic Chunker:
-    Splits text into sentences, computes sentence embeddings,
-    and places chunk boundaries at points of high cosine distance.
+    parts = _SENTENCE_SPLIT_RE.split(text.strip())
+    return [s.strip() for s in parts if s.strip()]
+
+
+# ---------------------------------------------------------------------------
+# SemanticChunker
+# ---------------------------------------------------------------------------
+
+
+class SemanticChunker(BaseChunker):
+    """Semantic chunker using multilingual sentence embeddings.
+
+    Algorithm:
+        1. Split each passage into sentences.
+        2. Embed every sentence with ``paraphrase-multilingual-MiniLM-L12-v2``.
+        3. Compute cosine distance between consecutive sentence embeddings.
+        4. Identify *breakpoints* where the distance exceeds the
+           ``threshold_percentile`` of all distances (i.e. the biggest
+           topic shifts).
+        5. Group sentences between breakpoints into chunks.
+
+    Args:
+        model_name: HuggingFace model identifier for the sentence embedder.
+        threshold_percentile: Percentile (0–100) of inter-sentence distances
+            above which a split is triggered.  Higher values → fewer, larger
+            chunks.
+        min_chunk_sentences: Minimum number of sentences per chunk.  Short
+            trailing segments are merged into the previous chunk.
     """
-    def __init__(self, distance_threshold: float = 0.4, max_chunk_words: int = 150):
-        self.distance_threshold = distance_threshold
-        self.max_chunk_words = max_chunk_words
-        self._embedder = None
 
-    def _get_embedder(self):
-        if self._embedder is None:
-            try:
-                from sentence_transformers import SentenceTransformer
-                self._embedder = SentenceTransformer("all-MiniLM-L6-v2")
-            except Exception:
-                self._embedder = "fallback"
-        return self._embedder
+    def __init__(
+        self,
+        model_name: str = _DEFAULT_MODEL,
+        threshold_percentile: float = 75.0,
+        min_chunk_sentences: int = 1,
+    ) -> None:
+        self.model_name = model_name
+        self.threshold_percentile = threshold_percentile
+        self.min_chunk_sentences = min_chunk_sentences
 
-    def _split_sentences(self, text: str) -> List[str]:
-        # Split on sentence boundaries (English .!? and Hindi danda ।)
-        raw_sentences = re.split(r'(?<=[.!?।])\s+', text)
-        sentences = [s.strip() for s in raw_sentences if s.strip()]
-        return sentences if sentences else [text]
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
-    def _cosine_distance(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
-        norm1 = np.linalg.norm(vec1)
-        norm2 = np.linalg.norm(vec2)
-        if norm1 == 0 or norm2 == 0:
-            return 0.0
-        similarity = np.dot(vec1, vec2) / (norm1 * norm2)
-        return float(1.0 - similarity)
+    @staticmethod
+    def _cosine_distances(embeddings: np.ndarray) -> np.ndarray:
+        """Compute cosine distances between consecutive embedding vectors.
 
-    def _compute_embeddings(self, sentences: List[str]) -> Optional[np.ndarray]:
-        embedder = self._get_embedder()
-        if embedder != "fallback":
-            try:
-                embeddings = embedder.encode(sentences, show_progress_bar=False)
-                return np.array(embeddings)
-            except Exception:
-                pass
-        # Fallback simple TF-IDF / character n-gram pseudo-embedding if transformer unavailable
-        vecs = []
-        for s in sentences:
-            words = s.lower().split()
-            # Simple 128-dim bag of words hashing trick vector
-            v = np.zeros(128, dtype=np.float32)
-            for w in words:
-                v[hash(w) % 128] += 1.0
-            vecs.append(v)
-        return np.array(vecs)
+        Returns an array of length ``len(embeddings) - 1``.
+        """
+        # Normalise rows to unit vectors
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        norms = np.where(norms == 0, 1.0, norms)  # avoid division by zero
+        normed = embeddings / norms
+        # Cosine similarity between adjacent rows
+        similarities = np.sum(normed[:-1] * normed[1:], axis=1)
+        return 1.0 - similarities  # convert to distance
 
-    def chunk_passage(self, passage: Passage) -> List[Chunk]:
-        sentences = self._split_sentences(passage.text)
-        if len(sentences) <= 1:
-            return [
-                Chunk(
-                    chunk_id=f"sem_{passage.passage_id}_0",
-                    source_passage_id=passage.passage_id,
-                    language=passage.language,
-                    text=passage.text,
-                    query_cluster=passage.query_cluster,
-                    metadata={"strategy": "semantic", "num_sentences": len(sentences)}
-                )
-            ]
+    def _find_breakpoints(self, distances: np.ndarray) -> List[int]:
+        """Return indices where the semantic distance exceeds the threshold.
 
-        embeddings = self._compute_embeddings(sentences)
-        distances = []
-        for i in range(len(sentences) - 1):
-            dist = self._cosine_distance(embeddings[i], embeddings[i+1])
-            distances.append(dist)
+        Each index ``i`` in the returned list means a split should be
+        inserted *after* sentence ``i``.
+        """
+        if len(distances) == 0:
+            return []
+        threshold = float(np.percentile(distances, self.threshold_percentile))
+        return [i for i, d in enumerate(distances) if d > threshold]
 
-        # Form chunks by grouping sentences until distance exceeds threshold or max words reached
-        chunks: List[Chunk] = []
-        curr_sentences: List[str] = [sentences[0]]
-        curr_words = len(sentences[0].split())
-        chunk_idx = 0
-
-        for i in range(len(distances)):
-            dist = distances[i]
-            next_sent = sentences[i+1]
-            next_words = len(next_sent.split())
-
-            if dist > self.distance_threshold or (curr_words + next_words > self.max_chunk_words):
-                # Cut chunk
-                chunk_text = " ".join(curr_sentences)
-                chunks.append(
-                    Chunk(
-                        chunk_id=f"sem_{passage.passage_id}_{chunk_idx}",
-                        source_passage_id=passage.passage_id,
-                        language=passage.language,
-                        text=chunk_text,
-                        query_cluster=passage.query_cluster,
-                        metadata={"strategy": "semantic", "break_distance": round(dist, 4)}
-                    )
-                )
-                chunk_idx += 1
-                curr_sentences = [next_sent]
-                curr_words = next_words
-            else:
-                curr_sentences.append(next_sent)
-                curr_words += next_words
-
-        if curr_sentences:
-            chunk_text = " ".join(curr_sentences)
-            chunks.append(
-                Chunk(
-                    chunk_id=f"sem_{passage.passage_id}_{chunk_idx}",
-                    source_passage_id=passage.passage_id,
-                    language=passage.language,
-                    text=chunk_text,
-                    query_cluster=passage.query_cluster,
-                    metadata={"strategy": "semantic"}
-                )
-            )
-
-        return chunks
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def chunk(self, passages: List[Passage]) -> List[Chunk]:
-        all_chunks = []
-        for passage in passages:
-            all_chunks.extend(self.chunk_passage(passage))
-        return all_chunks
+        """Split passages into semantically coherent chunks.
+
+        Args:
+            passages: Source passages from the dataset.
+
+        Returns:
+            A list of Chunks with metadata including the embedding model
+            and the distance threshold used.
+        """
+        embedder = _get_embedder(self.model_name)
+        chunks: List[Chunk] = []
+
+        for p in passages:
+            sentences = _split_sentences(p.text)
+            if not sentences:
+                continue
+
+            # Single-sentence passages → one chunk, no embedding needed
+            if len(sentences) == 1:
+                chunks.append(
+                    Chunk(
+                        chunk_id=f"sem_{p.passage_id}_0",
+                        text=sentences[0],
+                        source_passage_id=p.passage_id,
+                        language=p.language,
+                        metadata={
+                            "strategy": "semantic",
+                            "embedding_model": self.model_name,
+                            "split_threshold_pct": self.threshold_percentile,
+                            "num_sentences": 1,
+                            "char_length": len(sentences[0]),
+                        },
+                        query_cluster=p.query_cluster,
+                    )
+                )
+                continue
+
+            # Embed all sentences in batch
+            embeddings = embedder.encode(sentences, show_progress_bar=False)
+            distances = self._cosine_distances(np.array(embeddings))
+            breakpoints = self._find_breakpoints(distances)
+
+            # Build chunk boundaries: list of (start_idx, end_idx) inclusive
+            boundaries: List[tuple] = []
+            start = 0
+            for bp in breakpoints:
+                end = bp  # inclusive
+                if end - start + 1 >= self.min_chunk_sentences:
+                    boundaries.append((start, end))
+                    start = end + 1
+            # Remaining sentences
+            if start < len(sentences):
+                boundaries.append((start, len(sentences) - 1))
+
+            # Merge very short trailing chunk into previous if possible
+            if (
+                len(boundaries) > 1
+                and boundaries[-1][1] - boundaries[-1][0] + 1
+                < self.min_chunk_sentences
+            ):
+                prev_start, _ = boundaries[-2]
+                _, last_end = boundaries[-1]
+                boundaries[-2] = (prev_start, last_end)
+                boundaries.pop()
+
+            for chunk_idx, (s, e) in enumerate(boundaries):
+                chunk_text = " ".join(sentences[s : e + 1])
+                chunks.append(
+                    Chunk(
+                        chunk_id=f"sem_{p.passage_id}_{chunk_idx}",
+                        text=chunk_text,
+                        source_passage_id=p.passage_id,
+                        language=p.language,
+                        metadata={
+                            "strategy": "semantic",
+                            "embedding_model": self.model_name,
+                            "split_threshold_pct": self.threshold_percentile,
+                            "num_sentences": e - s + 1,
+                            "sentence_range": [s, e],
+                            "char_length": len(chunk_text),
+                        },
+                        query_cluster=p.query_cluster,
+                    )
+                )
+
+        return chunks

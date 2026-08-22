@@ -31,7 +31,7 @@ from data.preprocess import Passage, normalize_text
 
 def _build_retriever():
     """Build corpus and hybrid retriever from benchmark data."""
-    from eval.benchmark_chunking import _EN_QA_PAIRS, _HI_QA_PAIRS, _DISTRACTOR_PASSAGES
+    from data.corpus import _EN_QA_PAIRS, _HI_QA_PAIRS, _DISTRACTOR_PASSAGES
     from chunking.passage_native import PassageNativeChunker
     from retrieval.retrieval import HybridRetriever
 

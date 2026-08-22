@@ -1,14 +1,6 @@
---extra-index-url https://download.pytorch.org/whl/cpu
-
-streamlit
-requests
-datasets
-pytest
+fastapi
+uvicorn[standard]
 python-dotenv
-sentence-transformers
-faiss-cpu
-rank-bm25
-numpy
-groq
-gradio
-soundfile
+requests
+pydantic
+python-multipart

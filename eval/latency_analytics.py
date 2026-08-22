@@ -151,7 +151,7 @@ _TEST_QUERIES: List[Tuple[str, str]] = [
 
 def _build_corpus():
     """Build a small corpus for latency testing."""
-    from eval.benchmark_chunking import _EN_QA_PAIRS, _HI_QA_PAIRS, _DISTRACTOR_PASSAGES
+    from data.corpus import _EN_QA_PAIRS, _HI_QA_PAIRS, _DISTRACTOR_PASSAGES
 
     passages = []
     for _, text, pid in _EN_QA_PAIRS:

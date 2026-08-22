@@ -1,15 +1,14 @@
-# pinned dependencies for reproducibility
-requests==2.31.0
-datasets==2.19.0
-pytest==8.2.2
-python-dotenv==1.0.1
-sentence-transformers==3.0.1
-faiss-cpu>=1.7.4
-rank-bm25==0.2.2
-numpy==1.26.4
-pydantic==2.7.4
-matplotlib==3.9.0
-torch>=2.0.0
-transformers>=4.40.0
+--extra-index-url https://download.pytorch.org/whl/cpu
 
 streamlit
+requests
+datasets
+pytest
+python-dotenv
+sentence-transformers
+faiss-cpu
+rank-bm25
+numpy
+groq
+gradio
+soundfile

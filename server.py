@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 import re
 import tempfile
 import time
@@ -19,8 +20,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, File, Form, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional
@@ -32,6 +33,12 @@ from guardrails.guardrails import validate_input
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ─── Resolve paths (absolute — works regardless of CWD) ─────────────
+
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
+INDEX_HTML = STATIC_DIR / "index.html"
+
 # ─── Initialise retriever (instant — no ML model loading) ────────────
 
 print("[*] Building TF-IDF index...")
@@ -42,9 +49,6 @@ print(f"[OK] Index built in {(time.perf_counter() - _start)*1000:.0f}ms")
 # ─── FastAPI app ─────────────────────────────────────────────────────
 
 app = FastAPI(title="Voice RAG Pipeline", version="1.0.0")
-
-# Serve static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 # ─── Models ──────────────────────────────────────────────────────────
@@ -74,7 +78,13 @@ class QueryResponse(BaseModel):
 
 @app.get("/")
 async def serve_ui():
-    return FileResponse("static/index.html")
+    return FileResponse(str(INDEX_HTML))
+
+
+@app.head("/")
+async def health_check():
+    """Render health check sends HEAD /. Return 200 OK."""
+    return Response(status_code=200)
 
 
 @app.post("/api/query", response_model=QueryResponse)
@@ -229,6 +239,10 @@ async def handle_voice(
         ],
     )
 
+
+# ─── Static files (mount AFTER routes so API routes take priority) ───
+
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # ─── Run ─────────────────────────────────────────────────────────────
 

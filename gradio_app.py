@@ -3,9 +3,6 @@ import tempfile
 import gradio as gr
 from dotenv import load_dotenv
 
-# Ensure environment keys are set
-os.environ["SARVAM_API_KEY"] = "sk_2al62ug5_6dolJ6FyyzOyhcdmhhYyWI9u"
-os.environ["GROQ_API_KEY"] = "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"
 load_dotenv()
 
 from harness.pipeline import PipelineInput, RAGPipeline
@@ -139,4 +136,4 @@ with gr.Blocks() as demo:
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 7860))
-    demo.launch(server_name="0.0.0.0", server_port=port, share=False)
+    demo.launch(server_name="0.0.0.0", server_port=port, share=True)
